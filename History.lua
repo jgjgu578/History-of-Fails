@@ -1,6 +1,7 @@
 -- =========================================================================
 -- [[ PROJECT: HISTORY OF FAILS (ULTIMATE) ]]
 -- [[ FIX: ANTI-OVERLAP & CLEANUP SYSTEM ]]
+-- [[ ADDED: SMART COMBAT & FPS BOOST WITH RESET ]]
 -- =========================================================================
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -21,6 +22,7 @@ end
 ClearAllESP() -- Clean on startup
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 -- =========================================================================
 -- // [ 1. CONFIGURATION ] //
@@ -43,6 +45,7 @@ getgenv().Config = {
     },
     Combat = {
         Aura = { Enabled = false, Range = 25 },
+        AutoBlock = { Enabled = false, Range = 25, Cooldown = 1.3 },
         Hitbox = { Enabled = false, Size = 15, Transparency = 0.7, Part = "HumanoidRootPart" }
     },
     Move = {
@@ -54,11 +57,17 @@ getgenv().Config = {
         AntiJumpDelay = false
     },
     World = { FullBright = false, NoFog = false, FOV = 70 },
-    Bypass = { AntiRagdoll = false, NoSlowdown = false }
+    Bypass = { AntiRagdoll = false, NoSlowdown = false },
+    Performance = { FpsBoost = false }
 }
 
 local Lighting = game:GetService("Lighting")
-local Backup = { Ambient = Lighting.Ambient, FogEnd = Lighting.FogEnd, Brightness = Lighting.Brightness }
+local Backup = { 
+    Ambient = Lighting.Ambient, 
+    FogEnd = Lighting.FogEnd, 
+    Brightness = Lighting.Brightness,
+    GlobalShadows = Lighting.GlobalShadows
+}
 
 -- =========================================================================
 -- // [ 2. INTERFACE ] //
@@ -73,11 +82,14 @@ local TabCombat = Window:CreateTab("⚔️ Combat")
 local TabMove   = Window:CreateTab("🚀 Movement")
 local TabVis    = Window:CreateTab("👁️ Visuals")
 local TabWorld  = Window:CreateTab("🌎 World")
+local TabPerf   = Window:CreateTab("⚡ Performance")
 local TabShield = Window:CreateTab("🛡️ Bypass")
 
 -- [ ⚔️ COMBAT ]
 TabCombat:CreateToggle({Name = "Enable Kill Aura", CurrentValue = false, Callback = function(v) Config.Combat.Aura.Enabled = v end})
 TabCombat:CreateSlider({Name = "Aura Range", Range = {5, 50}, Increment = 1, CurrentValue = 25, Callback = function(v) Config.Combat.Aura.Range = v end})
+TabCombat:CreateToggle({Name = "Auto-Block (Parry)", CurrentValue = false, Callback = function(v) Config.Combat.AutoBlock.Enabled = v end})
+TabCombat:CreateSection("--- [ HITBOXES ] ---")
 TabCombat:CreateToggle({Name = "Enable Expanded Hitboxes", CurrentValue = false, Callback = function(v) Config.Combat.Hitbox.Enabled = v end})
 TabCombat:CreateSlider({Name = "Hitbox Size", Range = {2, 60}, Increment = 1, CurrentValue = 15, Callback = function(v) Config.Combat.Hitbox.Size = v end})
 
@@ -102,9 +114,40 @@ TabVis:CreateColorPicker({Name = "Students", Color = Config.Visuals.Colors.Stude
 TabVis:CreateColorPicker({Name = "Teachers", Color = Config.Visuals.Colors.Teachers, Callback = function(v) Config.Visuals.Colors.Teachers = v end})
 TabVis:CreateColorPicker({Name = "Alice", Color = Config.Visuals.Colors.Alice, Callback = function(v) Config.Visuals.Colors.Alice = v end})
 
--- [ 🌎 WORLD & 🛡️ BYPASS ]
+-- [ 🌎 WORLD ]
 TabWorld:CreateToggle({Name = "FullBright", CurrentValue = false, Callback = function(v) Config.World.FullBright = v if not v then Lighting.Ambient = Backup.Ambient end end})
 TabWorld:CreateToggle({Name = "Remove Fog", CurrentValue = false, Callback = function(v) Config.World.NoFog = v if not v then Lighting.FogEnd = Backup.FogEnd end end})
+
+-- [ ⚡ PERFORMANCE ]
+TabPerf:CreateToggle({Name = "FPS Boost", CurrentValue = false, Callback = function(v) 
+    Config.Performance.FpsBoost = v 
+    if v then
+        for _, obj in pairs(game:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                obj.Material = Enum.Material.SmoothPlastic
+            elseif obj:IsA("Texture") or obj:IsA("Decal") then
+                obj.Transparency = 1
+            elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
+                obj.Enabled = false
+            end
+        end
+        Lighting.GlobalShadows = false
+    else
+        -- ОТМЕНА ПРИ ВЫКЛЮЧЕНИИ (Возврат материалов и теней)
+        for _, obj in pairs(game:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                obj.Material = Enum.Material.Plastic -- Стандартный возврат
+            elseif obj:IsA("Texture") or obj:IsA("Decal") then
+                obj.Transparency = 0
+            elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
+                obj.Enabled = true
+            end
+        end
+        Lighting.GlobalShadows = Backup.GlobalShadows
+    end
+end})
+
+-- [ 🛡️ BYPASS ]
 TabShield:CreateToggle({Name = "No Slowdown", CurrentValue = false, Callback = function(v) Config.Bypass.NoSlowdown = v end})
 TabShield:CreateToggle({Name = "Anti-Ragdoll", CurrentValue = false, Callback = function(v) Config.Bypass.AntiRagdoll = v end})
 
@@ -115,6 +158,12 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
+local LastBlockTimestamp = 0
+
+local function IsAttackSoundPlaying(snd)
+    if not snd or not snd:IsA("Sound") then return false end
+    return snd.Playing or (snd.TimePosition > 0 and snd.TimePosition < snd.TimeLength)
+end
 
 local function SetupESP(p)
     local box = Drawing.new("Square")
@@ -122,7 +171,6 @@ local function SetupESP(p)
     
     local connection
     connection = RunService.RenderStepped:Connect(function()
-        -- If player leaves - remove drawings and disconnect loop
         if not p.Parent then
             box:Remove(); boxOutline:Remove(); connection:Disconnect(); return 
         end
@@ -140,14 +188,12 @@ local function SetupESP(p)
         local root = char.HumanoidRootPart
         local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
         
-        -- Color selection
         local color = Config.Visuals.Colors.Students
         if p.Team then
             if p.Team.Name == "АЛИСА" or p.Team.Name == "Alice" then color = Config.Visuals.Colors.Alice
             elseif string.find(string.lower(p.Team.Name), "teach") then color = Config.Visuals.Colors.Teachers end
         end
 
-        -- STRICT CHECK TO PREVENT OVERLAPPING
         local hl = char:FindFirstChild("UltHL") or Instance.new("Highlight", char)
         hl.Name = "UltHL"; hl.Enabled = true; hl.FillColor = color
         hl.FillTransparency = Config.Visuals.FillTransparency
@@ -160,7 +206,6 @@ local function SetupESP(p)
         lbl.Name = "L"; lbl.BackgroundTransparency = 1; lbl.Size = UDim2.new(1,0,1,0); lbl.TextColor3 = color; lbl.TextSize = 12; lbl.Font = Enum.Font.GothamBold
         lbl.Text = p.Name .. " [" .. math.floor((LocalPlayer.Character.HumanoidRootPart.Position - root.Position).Magnitude) .. "m]"
 
-        -- 2D Boxes
         if onScreen and Config.Visuals.Boxes then
             local sx, sy = 2000/pos.Z, 2500/pos.Z
             boxOutline.Visible = true; boxOutline.Color = Color3.fromRGB(0,0,0); boxOutline.Thickness = 3
@@ -176,9 +221,14 @@ end
 RunService.Heartbeat:Connect(function(dt)
     pcall(function()
         local char = LocalPlayer.Character
-        if not char then return end
+        if not char or not char:FindFirstChild("HumanoidRootPart") then return end
         local hum = char.Humanoid
         local root = char.HumanoidRootPart
+        local myTool = char:FindFirstChildOfClass("Tool")
+
+        local lpTeam = LocalPlayer.Team and LocalPlayer.Team.Name or ""
+        local isMeTeacher = string.find(string.lower(lpTeam), "teach")
+        local isMeAlice = (lpTeam == "АЛИСА" or lpTeam == "Alice")
 
         -- SPEED (1/16)
         if Config.Move.Speed.Enabled and hum.MoveDirection.Magnitude > 0 then
@@ -186,29 +236,65 @@ RunService.Heartbeat:Connect(function(dt)
             root.CFrame = root.CFrame + (hum.MoveDirection * addedSpeed * dt * 10)
         end
 
-        -- COMBAT & WORLD
+        -- WORLD & BYPASS
         if Config.World.FullBright then Lighting.Ambient = Color3.fromRGB(255,255,255) end
         if Config.World.NoFog then Lighting.FogEnd = 1e5 end
         if Config.Move.Noclip then for _, v in pairs(char:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = false end end end
         
-        if Config.Combat.Aura.Enabled then
-            local tool = char:FindFirstChildOfClass("Tool")
-            if tool and tool:FindFirstChild("Handle") then
-                for _, o in pairs(Players:GetPlayers()) do
-                    if o ~= LocalPlayer and o.Character and (root.Position - o.Character.HumanoidRootPart.Position).Magnitude <= Config.Combat.Aura.Range then
-                        firetouchinterest(o.Character.HumanoidRootPart, tool.Handle, 0)
-                        firetouchinterest(o.Character.HumanoidRootPart, tool.Handle, 1)
+        -- COMBAT LOGIC LOOP
+        for _, o in pairs(Players:GetPlayers()) do
+            if o ~= LocalPlayer and o.Character and o.Character:FindFirstChild("HumanoidRootPart") then
+                local eRoot = o.Character.HumanoidRootPart
+                local eChar = o.Character
+                local dist = (root.Position - eRoot.Position).Magnitude
+                
+                local oTeam = o.Team and o.Team.Name or ""
+                local tIsTeacher = string.find(string.lower(oTeam), "teach")
+                local tIsAlice = (oTeam == "АЛИСА" or oTeam == "Alice")
+                local tIsStudent = not (tIsTeacher or tIsAlice)
+                local enemyArmed = eChar:FindFirstChildOfClass("Tool") ~= nil
+
+                -- Target Logic
+                local isEnemy = false
+                if isMeTeacher then
+                    if (tIsStudent and enemyArmed) or tIsAlice then isEnemy = true end
+                elseif isMeAlice then
+                    if tIsTeacher or (tIsStudent and enemyArmed) then isEnemy = true end
+                else -- I am Student
+                    if tIsTeacher or tIsAlice then isEnemy = true end
+                end
+
+                -- HITBOXES
+                if Config.Combat.Hitbox.Enabled and isEnemy then
+                    eRoot.Size = Vector3.new(Config.Combat.Hitbox.Size, Config.Combat.Hitbox.Size, Config.Combat.Hitbox.Size)
+                    eRoot.Transparency = Config.Combat.Hitbox.Transparency; eRoot.CanCollide = false
+                else
+                    if eRoot.Size.X > 2 then
+                        eRoot.Size = Vector3.new(2, 2, 1); eRoot.Transparency = 1
                     end
                 end
-            end
-        end
-        
-        if Config.Combat.Hitbox.Enabled then
-            for _, o in pairs(Players:GetPlayers()) do
-                if o ~= LocalPlayer and o.Character and o.Character:FindFirstChild(Config.Combat.Hitbox.Part) then
-                    local part = o.Character[Config.Combat.Hitbox.Part]
-                    part.Size = Vector3.new(Config.Combat.Hitbox.Size, Config.Combat.Hitbox.Size, Config.Combat.Hitbox.Size)
-                    part.Transparency = Config.Combat.Hitbox.Transparency; part.CanCollide = false
+
+                -- KILL AURA
+                if Config.Combat.Aura.Enabled and isEnemy and dist <= Config.Combat.Aura.Range and myTool then
+                    if myTool:FindFirstChild("Handle") then
+                        firetouchinterest(eRoot, myTool.Handle, 0)
+                        firetouchinterest(eRoot, myTool.Handle, 1)
+                        myTool:Activate()
+                    end
+                end
+
+                -- AUTO BLOCK
+                if Config.Combat.AutoBlock.Enabled and enemyArmed and dist <= Config.Combat.AutoBlock.Range then
+                    for _, snd in pairs(eChar:GetDescendants()) do
+                        if (snd.Name == "SwingSFX" or snd.Name == "Attack") and IsAttackSoundPlaying(snd) then
+                            if tick() - LastBlockTimestamp >= Config.Combat.AutoBlock.Cooldown then
+                                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+                                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
+                                LastBlockTimestamp = tick()
+                            end
+                            break
+                        end
+                    end
                 end
             end
         end
@@ -219,4 +305,4 @@ end)
 for _, p in pairs(Players:GetPlayers()) do SetupESP(p) end
 Players.PlayerAdded:Connect(SetupESP)
 
-Rayfield:Notify({Title = "History of Fails", Content = "Cleanup complete. Overlap fixed!", Duration = 5})
+Rayfield:Notify({Title = "History of Fails", Content = "FPS Boost с функцией отмены готов!", Duration = 5})
