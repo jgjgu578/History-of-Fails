@@ -1,5 +1,5 @@
 -- =========================================================================
--- [[ HISTORY OF FAILS ULTIMATE - FPE:S Edition ]]
+-- [[ HISTORY OF FAILS - FPE:S Edition ]]
 -- [[ ~1000 LINES • Color Correction FIXED • High Graphics improved ]]
 -- [[ All tabs restored • No external assets • Safe ]]
 -- =========================================================================
@@ -133,9 +133,9 @@ local ColorCorrection = EnsureEffect("ColorCorrection", "ColorCorrectionEffect")
 
 -- ====================== UI ======================
 local Window = Rayfield:CreateWindow({
-   Name = "History of Fails | ULTIMATE FPE:S",
+   Name = "History of Fails | FPE:S",
    LoadingTitle = "Initializing...",
-   ConfigurationSaving = { Enabled = true, FolderName = "HistoryOfFails_Ultimate" }
+   ConfigurationSaving = { Enabled = true, FolderName = "HistoryOfFails_" }
 })
 
 local TabCombat = Window:CreateTab("⚔️ Combat")
